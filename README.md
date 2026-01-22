@@ -1,6 +1,6 @@
 # Aether-Runner
 
-A serverless GPU orchestrator designed to mimic the core backend of [Modal.com](https://modal.com), providing high-speed **Scale-to-Zero** capabilities and **sub-second cold starts**.
+A serverless GPU orchestrator providing high-speed **Scale-to-Zero** capabilities and **sub-second cold starts**.
 
 ## 🏗️ Architecture
 
