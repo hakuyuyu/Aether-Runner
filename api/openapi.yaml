@@ -1,0 +1,368 @@
+openapi: 3.0.3
+info:
+  title: Aether-Runner API
+  description: |
+    Aether-Runner is a serverless GPU orchestrator that manages GPU-enabled Docker containers
+    with high-speed Scale-to-Zero capabilities and sub-second cold starts.
+  version: 1.0.0
+  contact:
+    name: Aether-Runner Team
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: Workers
+    description: GPU worker management
+  - name: System
+    description: System health and monitoring
+
+paths:
+  /v1/workers:
+    post:
+      summary: Launch a new GPU worker
+      description: |
+        Creates and starts a new GPU-enabled container for the specified model.
+        The request is processed asynchronously - the worker will be in STARTING
+        status when the response is returned.
+      tags:
+        - Workers
+      operationId: createWorker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkerRequest'
+            example:
+              model_image: "nvidia/cuda:12.0-base"
+              tenant_id: "tenant-123"
+              model:
+                name: "llama-7b"
+                vram_requirement_mb: 14000
+              gpu_count: 1
+      responses:
+        '202':
+          description: Worker creation initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateWorkerResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Tenant quota exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: No GPU resources available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      summary: List all workers
+      description: Returns a list of all workers, optionally filtered by tenant.
+      tags:
+        - Workers
+      operationId: listWorkers
+      parameters:
+        - name: tenant_id
+          in: query
+          description: Filter workers by tenant ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of workers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WorkerState'
+
+  /v1/workers/{id}:
+    get:
+      summary: Get worker status
+      description: Returns the current state of a specific worker.
+      tags:
+        - Workers
+      operationId: getWorker
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Worker UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Worker state
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/WorkerState'
+                  - type: object
+                    properties:
+                      endpoint:
+                        $ref: '#/components/schemas/Endpoint'
+        '404':
+          description: Worker not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      summary: Terminate a worker
+      description: |
+        Initiates graceful termination of a worker. The worker will transition
+        to TERMINATING status and its container will be stopped and removed.
+      tags:
+        - Workers
+      operationId: deleteWorker
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Worker UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '202':
+          description: Termination initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  worker_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [TERMINATING]
+        '404':
+          description: Worker not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/health:
+    get:
+      summary: Health check
+      description: Returns the health status of the service and its dependencies.
+      tags:
+        - System
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service is degraded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /v1/gpus:
+    get:
+      summary: List available GPUs
+      description: Returns information about all GPUs and their current allocation status.
+      tags:
+        - System
+      operationId: listGpus
+      responses:
+        '200':
+          description: List of GPUs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GPUInfo'
+
+components:
+  schemas:
+    CreateWorkerRequest:
+      type: object
+      required:
+        - model_image
+        - tenant_id
+      properties:
+        model_image:
+          type: string
+          description: Docker image to run
+          example: "nvidia/cuda:12.0-base"
+        tenant_id:
+          type: string
+          description: Tenant identifier for isolation
+          example: "tenant-123"
+        model:
+          $ref: '#/components/schemas/ModelConfig'
+        gpu_count:
+          type: integer
+          description: Number of GPUs to allocate
+          default: 1
+          minimum: 1
+
+    CreateWorkerResponse:
+      type: object
+      properties:
+        worker_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [STARTING]
+        endpoint:
+          $ref: '#/components/schemas/Endpoint'
+
+    WorkerState:
+      type: object
+      required:
+        - worker_id
+        - tenant_id
+        - status
+      properties:
+        worker_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, STARTING, RUNNING, IDLE, TERMINATING]
+        model:
+          $ref: '#/components/schemas/ModelConfig'
+        gpu_assignment:
+          $ref: '#/components/schemas/GPUAssignment'
+        metrics:
+          $ref: '#/components/schemas/WorkerMetrics'
+
+    ModelConfig:
+      type: object
+      required:
+        - name
+        - vram_requirement_mb
+      properties:
+        name:
+          type: string
+          description: Model name identifier
+        version:
+          type: string
+          description: Model version
+        vram_requirement_mb:
+          type: integer
+          description: Required VRAM in megabytes
+
+    GPUAssignment:
+      type: object
+      properties:
+        index:
+          type: integer
+          description: GPU index
+        uuid:
+          type: string
+          description: GPU UUID
+        memory_allocated_mb:
+          type: integer
+          description: Allocated VRAM in megabytes
+
+    WorkerMetrics:
+      type: object
+      properties:
+        uptime_seconds:
+          type: integer
+        last_request_at:
+          type: string
+          format: date-time
+        total_requests:
+          type: integer
+
+    Endpoint:
+      type: object
+      properties:
+        ip:
+          type: string
+          description: Container IP address
+        port:
+          type: integer
+          description: Container port
+
+    GPUInfo:
+      type: object
+      properties:
+        uuid:
+          type: string
+        index:
+          type: integer
+        total_vram_mb:
+          type: integer
+        allocated_mb:
+          type: integer
+        available_mb:
+          type: integer
+        loaded_models:
+          type: array
+          items:
+            type: string
+        active_workers:
+          type: array
+          items:
+            type: string
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded]
+        docker:
+          type: boolean
+        worker_count:
+          type: integer
+        timestamp:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Error code
+              enum:
+                - RESOURCE_EXHAUSTED
+                - GPU_UNAVAILABLE
+                - DOCKER_FAILED
+                - INVALID_IMAGE
+                - TENANT_QUOTA_EXCEEDED
+                - WORKER_NOT_FOUND
+                - INVALID_REQUEST
+                - INTERNAL_ERROR
+            message:
+              type: string
+              description: Human-readable error message
